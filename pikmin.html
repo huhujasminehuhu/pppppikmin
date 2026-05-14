@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GPX 視覺化任務規劃器</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&display=swap');
+        body { font-family: 'Noto Sans TC', sans-serif; background-color: #f8fafc; }
+        #map { height: 100%; width: 100%; min-height: 500px; z-index: 1; }
+        .sidebar { height: calc(100vh - 64px); overflow-y: auto; }
+        .custom-scrollbar::-webkit-scrollbar { width: 5px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+        
+        /* 已選取的點位標籤 (藍色) */
+        .marker-picked { 
+            background: #2563eb; color: white; border-radius: 50%; width: 28px; height: 28px; 
+            display: flex; align-items: center; justify-content: center; font-size: 13px; 
+            font-weight: bold; border: 2.5px solid white; box-shadow: 0 3px 8px rgba(0,0,0,0.3);
+        }
+        /* 尚未選取的灰點 */
+        .marker-candidate { 
+            background: #94a3b8; border-radius: 50%; width: 14px; height: 14px; 
+            border: 2px solid white; box-shadow: 0 1px 4px rgba(0,0,0,0.3);
+            cursor: pointer; transition: all 0.2s;
+        }
+        .marker-candidate:hover { 
+            background: #3b82f6; transform: scale(1.5); 
+        }
+        input[type="range"]::-webkit-slider-thumb { 
+            border-radius: 50%; background: #2563eb; cursor: pointer; height: 16px; width: 16px; 
+            appearance: none; border: 2px solid white; box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+        }
+    </style>
+</head>
+<body class="h-screen flex flex-col overflow-hidden">
+
+    <!-- Navbar -->
+    <nav class="h-16 bg-slate-900 text-white px-6 flex items-center justify-between shrink-0 z-20 shadow-xl">
+        <div class="flex items-center gap-3">
+            <div class="bg-blue-600 p-2 rounded-lg text-white">
+                <i class="fas fa-map-location-dot text-xl"></i>
+            </div>
+            <h1 class="text-xl font-bold tracking-tight uppercase">Visual GPX Planner</h1>
+        </div>
+        <div class="flex gap-3">
+            <button onclick="copyGPX()" class="bg-slate-700 hover:bg-slate-600 text-white px-4 py-2 rounded-full text-xs font-bold transition-all flex items-center gap-2">
+                <i class="fas fa-copy"></i> 複製內容
+            </button>
+            <button onclick="downloadGPX()" class="bg-blue-600 hover:bg-blue-500 text-white px-5 py-2 rounded-full text-xs font-bold transition-all shadow-lg active:scale-95 flex items-center gap-2">
+                <i class="fas fa-file-download"></i> 下載 GPX
+            </button>
+        </div>
+    </nav>
+
+    <main class="flex-1 flex flex-col lg:flex-row overflow-hidden">
+        
+        <!-- Sidebar -->
+        <aside class="w-full lg:w-[400px] bg-white border-r border-slate-200 sidebar p-6 flex flex-col gap-6 shadow-xl z-10 custom-scrollbar">
+            
+            <section class="space-y-3">
+                <label class="text-sm font-bold text-slate-700 flex items-center justify-between">
+                    <span><i class="fas fa-paste text-blue-500 mr-2"></i>1. 批次貼上座標</span>
+                    <button onclick="resetApp()" class="text-[10px] text-red-500 hover:underline">全部重置</button>
+                </label>
+                <textarea 
+                    id="coords-input" 
+                    class="w-full h-32 p-3 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none font-mono text-[11px] bg-slate-50 shadow-inner resize-none"
+                    placeholder="格式範例：&#10;23.456, 120.123&#10;23.460, 120.130"></textarea>
+                <button onclick="loadInitialPool()" class="w-full py-2.5 bg-slate-800 text-white text-xs font-bold rounded-xl hover:bg-slate-700 transition-all shadow-md">
+                    解析並在地圖顯示灰點
+                </button>
+            </section>
+
+            <section class="p-4 bg-blue-50 rounded-2xl border border-blue-100 flex flex-col gap-2 shadow-sm">
+                <h4 class="text-xs font-bold text-blue-700 flex items-center gap-2">
+                    <i class="fas fa-mouse-pointer"></i> 互動排序說明
+                </h4>
+                <p class="text-[11px] text-blue-600 leading-relaxed">
+                    載入後，請在右側地圖上<b>按順序點擊灰色小點</b>。每點一個，它會變藍色並標上序號。
+                </p>
+                <div class="flex gap-2 mt-1">
+                    <button onclick="undoPick()" class="flex-1 py-1.5 bg-white text-blue-600 border border-blue-200 text-[10px] font-bold rounded-lg hover:bg-blue-100 transition-all">
+                        <i class="fas fa-undo mr-1"></i> 回上一步
+                    </button>
+                    <button onclick="clearPicks()" class="flex-1 py-1.5 bg-white text-red-500 border border-red-100 text-[10px] font-bold rounded-lg hover:bg-red-50 transition-all">
+                        <i class="fas fa-trash-can mr-1"></i> 重新排順序
+                    </button>
+                </div>
+            </section>
+
+            <section class="space-y-4">
+                <div class="space-y-3">
+                    <label class="text-xs font-bold text-slate-400 uppercase tracking-widest">路徑生成模式</label>
+                    <select id="path-mode" onchange="redrawPath()" class="w-full p-2.5 border border-slate-200 rounded-xl text-sm bg-white shadow-sm focus:ring-2 focus:ring-blue-500 outline-none">
+                        <option value="line">直線點對點</option>
+                        <option value="s_scan">S型繞行 (含閉合圓)</option>
+                    </select>
+                </div>
+                
+                <div class="space-y-2">
+                    <label class="text-xs font-bold text-slate-400 uppercase tracking-widest">檔案名稱</label>
+                    <input id="filename" type="text" value="mission_optimized" class="w-full p-2.5 border border-slate-200 rounded-xl text-sm outline-none">
+                </div>
+            </section>
+
+            <!-- 任務看板 -->
+            <div class="mt-auto bg-slate-900 p-5 rounded-2xl text-white shadow-2xl space-y-4">
+                <div class="flex justify-between items-center">
+                    <span class="text-[10px] font-bold uppercase opacity-40">Mission Stats</span>
+                    <span id="merge-alert" class="hidden text-[9px] bg-emerald-500 text-white px-2 py-0.5 rounded-full">點位已合併</span>
+                </div>
+                <div class="flex justify-between items-end">
+                    <div>
+                        <div id="stats-dist" class="text-2xl font-bold">0.00 <span class="text-xs font-normal opacity-50 uppercase">km</span></div>
+                        <div class="text-[10px] opacity-40">總行程里程</div>
+                    </div>
+                    <div class="text-right">
+                        <div id="stats-count" class="text-lg font-bold">0 / 0</div>
+                        <div class="text-[10px] opacity-40">已排序點位</div>
+                    </div>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Map -->
+        <section class="flex-1 relative bg-slate-200">
+            <div id="map"></div>
+            <!-- Legend Overlay -->
+            <div class="absolute bottom-10 right-10 z-[1000] bg-white/95 backdrop-blur px-4 py-3 rounded-2xl shadow-2xl border border-slate-200 flex flex-col gap-3 text-[11px] font-bold text-slate-700">
+                <div class="flex items-center gap-3">
+                    <span class="marker-candidate"></span> 待選灰點 (請依序點擊)
+                </div>
+                <div class="flex items-center gap-3">
+                    <div class="w-4 h-4 bg-blue-600 rounded-full text-white flex items-center justify-center text-[8px]">1</div> 已排順序點
+                </div>
+                <div class="flex items-center gap-3">
+                    <div class="w-6 h-0.5 bg-blue-600"></div> 主線路徑
+                </div>
+                <div class="flex items-center gap-3">
+                    <div class="w-6 h-0.5 bg-emerald-500 border-t border-dashed border-emerald-600"></div> 閉合返航
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- Hidden Textarea for copying -->
+    <textarea id="copy-helper" class="absolute -left-[9999px]"></textarea>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        let map, trackLayer, returnLayer, poolLayerGroup, pickMarkers = [];
+        let candidatePool = []; // 灰點池
+        let pickedSequence = []; // 藍點序列
+        const R = 6371000;
+
+        window.onload = () => {
+            map = L.map('map', { zoomControl: false }).setView([23.5, 121], 7);
+            L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+                attribution: '&copy; CARTO'
+            }).addTo(map);
+            L.control.zoom({ position: 'bottomright' }).addTo(map);
+            poolLayerGroup = L.layerGroup().addTo(map);
+        };
+
+        // 1. 強力解析座標
+        function loadInitialPool() {
+            const raw = document.getElementById('coords-input').value.trim();
+            if (!raw) return;
+
+            // 清空舊狀態，保留文字框
+            candidatePool = [];
+            pickedSequence = [];
+            clearLayers();
+
+            // 解析：尋找所有 [數字, 數字] 對
+            const lines = raw.split('\n');
+            const foundPoints = [];
+
+            lines.forEach(line => {
+                // 找出該行中所有的浮點數
+                const matches = line.match(/-?\d+\.\d+/g);
+                if (matches && matches.length >= 2) {
+                    const lat = parseFloat(matches[0]);
+                    const lon = parseFloat(matches[1]);
+                    if (!isNaN(lat) && !isNaN(lon)) foundPoints.push({ lat, lon });
+                }
+            });
+
+            if (foundPoints.length === 0) {
+                alert("找不到有效的經緯度座標！請確認格式如：23.45, 120.12");
+                return;
+            }
+
+            // 防堆疊合併 (5m)
+            const filtered = [foundPoints[0]];
+            for (let i = 1; i < foundPoints.length; i++) {
+                let stacked = false;
+                for (let f of filtered) {
+                    if (getMeters(foundPoints[i], f) < 5) { stacked = true; break; }
+                }
+                if (!stacked) filtered.push(foundPoints[i]);
+            }
+
+            document.getElementById('merge-alert').classList.toggle('hidden', filtered.length === foundPoints.length);
+            candidatePool = filtered;
+
+            renderCandidatePool();
+            
+            // 自動對焦
+            if (candidatePool.length > 0) {
+                const group = new L.featureGroup(candidatePool.map(p => L.marker([p.lat, p.lon])));
+                map.fitBounds(group.getBounds(), { padding: [80, 80] });
+            }
+        }
+
+        // 2. 渲染灰點
+        function renderCandidatePool() {
+            poolLayerGroup.clearLayers();
+            candidatePool.forEach((p, idx) => {
+                const icon = L.divIcon({ 
+                    className: 'c-icon', 
+                    html: `<div class="marker-candidate"></div>`, 
+                    iconSize: [14, 14], iconAnchor: [7, 7] 
+                });
+                const marker = L.marker([p.lat, p.lon], { icon }).addTo(poolLayerGroup);
+                marker.on('click', () => pickPoint(idx));
+            });
+            updateStats();
+        }
+
+        // 3. 點擊排序邏輯
+        function pickPoint(poolIdx) {
+            const point = candidatePool.splice(poolIdx, 1)[0];
+            pickedSequence.push(point);
+            renderCandidatePool();
+            redrawPath();
+        }
+
+        function undoPick() {
+            if (pickedSequence.length === 0) return;
+            candidatePool.push(pickedSequence.pop());
+            renderCandidatePool();
+            redrawPath();
+        }
+
+        function clearPicks() {
+            candidatePool = [...candidatePool, ...pickedSequence];
+            pickedSequence = [];
+            renderCandidatePool();
+            redrawPath();
+        }
+
+        function resetApp() {
+            document.getElementById('coords-input').value = '';
+            candidatePool = [];
+            pickedSequence = [];
+            clearLayers();
+            updateStats();
+            map.setView([23.5, 121], 7);
+        }
+
+        // 4. 路徑生成與繪圖
+        function redrawPath() {
+            clearPicksLayers();
+            if (pickedSequence.length === 0) return;
+
+            const mode = document.getElementById('path-mode').value;
+            let pathPts = [];
+
+            if (mode === 's_scan') {
+                pickedSequence.forEach(c => {
+                    const prev = pathPts.length > 0 ? pathPts[pathPts.length-1] : null;
+                    pathPts.push(...generateSScan(c, 30, 20, prev));
+                });
+                pathPts.push(pathPts[0]); // 閉合
+            } else {
+                pathPts = [...pickedSequence];
+            }
+
+            drawOnMap(pathPts, mode === 's_scan');
+        }
+
+        function generateSScan(center, r, s, prev) {
+            const local = [];
+            const half = Math.floor(r / s);
+            const lineData = [];
+            for (let i = half; i >= -half; i--) lineData.push({ offset: i*s, isC: i===0 });
+
+            let fromLeft = true;
+            if (prev) {
+                const oL = getLatLngOffset(center.lat, lineData[0].offset, -r);
+                const oR = getLatLngOffset(center.lat, lineData[0].offset, r);
+                fromLeft = getMeters(prev, {lat:center.lat+oL.dLat, lon:center.lon+oL.dLon}) <= getMeters(prev, {lat:center.lat+oR.dLat, lon:center.lon+oR.dLon});
+            }
+
+            lineData.forEach((row, idx) => {
+                const ltr = fromLeft ? (idx % 2 === 0) : (idx % 2 !== 0);
+                const p1 = getLatLngOffset(center.lat, row.offset, ltr ? -r : r);
+                const p2 = getLatLngOffset(center.lat, row.offset, ltr ? r : -r);
+                local.push({ lat: center.lat + p1.dLat, lon: center.lon + p1.dLon });
+                if (row.isC) local.push({ lat: center.lat, lon: center.lon });
+                local.push({ lat: center.lat + p2.dLat, lon: center.lon + p2.dLon });
+            });
+            return local;
+        }
+
+        function drawOnMap(pts, isLoop) {
+            const latlngs = pts.map(p => [p.lat, p.lon]);
+            if (isLoop && latlngs.length > 2) {
+                trackLayer = L.polyline(latlngs.slice(0, -1), { color: '#2563eb', weight: 4, opacity: 0.85, lineJoin: 'round' }).addTo(map);
+                returnLayer = L.polyline([latlngs[latlngs.length-2], latlngs[latlngs.length-1]], { color: '#10b981', weight: 3, dashArray: '10, 10' }).addTo(map);
+            } else {
+                trackLayer = L.polyline(latlngs, { color: '#2563eb', weight: 4, opacity: 0.85, lineJoin: 'round' }).addTo(map);
+            }
+
+            pickedSequence.forEach((c, idx) => {
+                const icon = L.divIcon({ 
+                    className: 'c-icon', 
+                    html: `<div class="marker-picked">${idx+1}</div>`, 
+                    iconSize: [28, 28], iconAnchor: [14, 14] 
+                });
+                const m = L.marker([c.lat, c.lon], { icon }).addTo(map);
+                pickMarkers.push(m);
+            });
+
+            // 計算距離
+            let totalM = 0;
+            for(let i=1; i<pts.length; i++) totalM += getMeters(pts[i-1], pts[i]);
+            document.getElementById('stats-dist').innerHTML = `${(totalM/1000).toFixed(2)} <span class="text-xs font-normal opacity-50 uppercase">km</span>`;
+            updateStats();
+        }
+
+        function clearLayers() {
+            poolLayerGroup.clearLayers();
+            clearPicksLayers();
+        }
+
+        function clearPicksLayers() {
+            if (trackLayer) map.removeLayer(trackLayer);
+            if (returnLayer) map.removeLayer(returnLayer);
+            pickMarkers.forEach(m => map.removeLayer(m));
+            pickMarkers = [];
+        }
+
+        function updateStats() {
+            document.getElementById('stats-count').innerText = `${pickedSequence.length} / ${candidatePool.length + pickedSequence.length}`;
+        }
+
+        // 幾何工具
+        function getMeters(p1, p2) {
+            const dLat = (p2.lat - p1.lat) * Math.PI / 180;
+            const dLon = (p2.lon - p1.lon) * Math.PI / 180;
+            const a = Math.sin(dLat/2) * Math.sin(dLat/2) + Math.cos(p1.lat*Math.PI/180) * Math.cos(p2.lat*Math.PI/180) * Math.sin(dLon/2) * Math.sin(dLon/2);
+            return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+        }
+
+        function getLatLngOffset(lat, mLat, mLon) {
+            const dLat = (mLat / R) * (180 / Math.PI);
+            const dLon = (mLon / (R * Math.cos(lat * Math.PI / 180))) * (180 / Math.PI);
+            return { dLat, dLon };
+        }
+
+        // 5. 匯出邏輯
+        function buildGPXContent() {
+            if (pickedSequence.length === 0) return null;
+            const mode = document.getElementById('path-mode').value;
+            let pts = [];
+            if (mode === 's_scan') {
+                pickedSequence.forEach(c => {
+                    const prev = pts.length > 0 ? pts[pts.length-1] : null;
+                    pts.push(...generateSScan(c, 30, 20, prev));
+                });
+                pts.push(pts[0]);
+            } else {
+                pts = [...pickedSequence];
+            }
+
+            let gpx = `<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="Visual Planner" xmlns="http://www.topografix.com/GPX/1/1">
+  <trk><name>Visual Mission</name><trkseg>`;
+            pts.forEach(p => gpx += `\n    <trkpt lat="${p.lat}" lon="${p.lon}"></trkpt>`);
+            gpx += `\n  </trkseg></trk></gpx>`;
+            return gpx;
+        }
+
+        function downloadGPX() {
+            const gpx = buildGPXContent();
+            if (!gpx) return;
+            const fname = (document.getElementById('filename').value || 'mission').replace('.gpx', '') + '.gpx';
+            const blob = new Blob([gpx], { type: 'application/gpx+xml;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url; link.download = fname;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            window.URL.revokeObjectURL(url);
+        }
+
+        function copyGPX() {
+            const gpx = buildGPXContent();
+            if (!gpx) return;
+            const helper = document.getElementById('copy-helper');
+            helper.value = gpx;
+            helper.select();
+            document.execCommand('copy');
+            alert("GPX 內容已複製到剪貼簿！");
+        }
+    </script>
+</body>
+</html>
