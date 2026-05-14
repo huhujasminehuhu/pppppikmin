@@ -50,6 +50,9 @@
             <button onclick="copyGPX()" class="bg-slate-700 hover:bg-slate-600 text-white px-4 py-2 rounded-full text-xs font-bold transition-all flex items-center gap-2">
                 <i class="fas fa-copy"></i> 複製內容
             </button>
+            <button onclick="copyShareLink()" class="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 rounded-full text-xs font-bold transition-all flex items-center gap-2">
+                <i class="fas fa-share-nodes"></i> 分享網址
+            </button>
             <button onclick="downloadGPX()" class="bg-blue-600 hover:bg-blue-500 text-white px-5 py-2 rounded-full text-xs font-bold transition-all shadow-lg active:scale-95 flex items-center gap-2">
                 <i class="fas fa-file-download"></i> 下載 GPX
             </button>
@@ -164,6 +167,7 @@
             }).addTo(map);
             L.control.zoom({ position: 'bottomright' }).addTo(map);
             poolLayerGroup = L.layerGroup().addTo(map);
+            loadRouteFromURL();
         };
 
         // 1. 強力解析座標
@@ -364,6 +368,99 @@
             return { dLat, dLon };
         }
 
+        // 5. 分享網址邏輯：把目前已排序路徑寫進網址，朋友打開同一個網址即可看到同一條路線
+        function encodeRouteData(data) {
+            const json = JSON.stringify(data);
+            const bytes = new TextEncoder().encode(json);
+            let binary = '';
+            bytes.forEach(b => binary += String.fromCharCode(b));
+            return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+        }
+
+        function decodeRouteData(str) {
+            try {
+                str = str.replace(/-/g, '+').replace(/_/g, '/');
+                while (str.length % 4) str += '=';
+                const binary = atob(str);
+                const bytes = Uint8Array.from(binary, c => c.charCodeAt(0));
+                return JSON.parse(new TextDecoder().decode(bytes));
+            } catch (e) {
+                console.warn('分享網址資料解析失敗：', e);
+                return null;
+            }
+        }
+
+        async function copyTextSmart(text) {
+            if (navigator.clipboard && window.isSecureContext) {
+                await navigator.clipboard.writeText(text);
+            } else {
+                const helper = document.getElementById('copy-helper');
+                helper.value = text;
+                helper.select();
+                document.execCommand('copy');
+            }
+        }
+
+        function buildShareLink() {
+            if (pickedSequence.length === 0) return null;
+            const data = {
+                v: 1,
+                mode: document.getElementById('path-mode').value,
+                filename: document.getElementById('filename').value || 'mission_optimized',
+                points: pickedSequence.map(p => ({
+                    lat: Number(p.lat.toFixed(7)),
+                    lon: Number(p.lon.toFixed(7))
+                }))
+            };
+            const encoded = encodeRouteData(data);
+            const base = window.location.href.split('#')[0].split('?')[0];
+            return `${base}#route=${encoded}`;
+        }
+
+        async function copyShareLink() {
+            const link = buildShareLink();
+            if (!link) {
+                alert('請先在地圖上排好至少一個點，再產生分享網址！');
+                return;
+            }
+            try {
+                await copyTextSmart(link);
+                alert('分享網址已複製！朋友打開後會看到同一條已排序路線。');
+            } catch (e) {
+                prompt('請手動複製這個分享網址：', link);
+            }
+        }
+
+        function loadRouteFromURL() {
+            const hash = window.location.hash || '';
+            const match = hash.match(/route=([^&]+)/);
+            if (!match) return;
+
+            const data = decodeRouteData(match[1]);
+            if (!data || !Array.isArray(data.points) || data.points.length === 0) {
+                alert('這個分享網址沒有有效的路線資料。');
+                return;
+            }
+
+            candidatePool = [];
+            pickedSequence = data.points
+                .map(p => ({ lat: parseFloat(p.lat), lon: parseFloat(p.lon) }))
+                .filter(p => !isNaN(p.lat) && !isNaN(p.lon));
+
+            if (data.mode) document.getElementById('path-mode').value = data.mode;
+            if (data.filename) document.getElementById('filename').value = data.filename;
+            document.getElementById('coords-input').value = pickedSequence.map(p => `${p.lat}, ${p.lon}`).join('\n');
+
+            clearLayers();
+            renderCandidatePool();
+            redrawPath();
+
+            if (pickedSequence.length > 0) {
+                const group = new L.featureGroup(pickedSequence.map(p => L.marker([p.lat, p.lon])));
+                map.fitBounds(group.getBounds(), { padding: [80, 80] });
+            }
+        }
+
         // 5. 匯出邏輯
         function buildGPXContent() {
             if (pickedSequence.length === 0) return null;
@@ -401,13 +498,10 @@
             window.URL.revokeObjectURL(url);
         }
 
-        function copyGPX() {
+        async function copyGPX() {
             const gpx = buildGPXContent();
             if (!gpx) return;
-            const helper = document.getElementById('copy-helper');
-            helper.value = gpx;
-            helper.select();
-            document.execCommand('copy');
+            await copyTextSmart(gpx);
             alert("GPX 內容已複製到剪貼簿！");
         }
     </script>
