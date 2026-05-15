@@ -34,6 +34,72 @@
             border-radius: 50%; background: #2563eb; cursor: pointer; height: 16px; width: 16px; 
             appearance: none; border: 2px solid white; box-shadow: 0 1px 3px rgba(0,0,0,0.3);
         }
+
+
+        /* 手機友善模式：地圖在上、面板在下，按鈕更好按 */
+        @media (max-width: 1023px) {
+            html, body { height: auto; min-height: 100%; overflow: auto; }
+            body { display: block; }
+            nav {
+                height: auto !important;
+                padding: 10px 12px !important;
+                flex-wrap: wrap;
+                gap: 10px;
+                position: sticky;
+                top: 0;
+            }
+            nav h1 { font-size: 15px !important; letter-spacing: 0.01em; }
+            nav > div:last-child {
+                width: 100%;
+                display: grid !important;
+                grid-template-columns: repeat(3, minmax(0, 1fr));
+                gap: 8px !important;
+            }
+            nav > div:last-child button {
+                justify-content: center;
+                padding: 10px 8px !important;
+                border-radius: 14px !important;
+                font-size: 11px !important;
+                white-space: nowrap;
+            }
+            main {
+                display: flex !important;
+                flex-direction: column !important;
+                overflow: visible !important;
+                min-height: auto;
+            }
+            main > aside.sidebar {
+                order: 2;
+                width: 100% !important;
+                height: auto !important;
+                max-height: none !important;
+                overflow: visible !important;
+                border-right: 0 !important;
+                padding: 14px !important;
+                gap: 14px !important;
+                box-shadow: none !important;
+            }
+            main > section.relative {
+                order: 1;
+                flex: none !important;
+                height: 52vh;
+                min-height: 360px;
+            }
+            #map { height: 100% !important; min-height: 360px !important; }
+            textarea#coords-input { height: 110px !important; font-size: 12px !important; }
+            .legend-overlay {
+                left: 12px !important;
+                right: 12px !important;
+                bottom: 12px !important;
+                width: auto;
+                display: grid !important;
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+                gap: 8px !important;
+                padding: 10px !important;
+                font-size: 10px !important;
+            }
+            .mission-card { margin-top: 0 !important; }
+        }
     </style>
 </head>
 <body class="h-screen flex flex-col overflow-hidden">
@@ -111,7 +177,7 @@
             </section>
 
             <!-- 任務看板 -->
-            <div class="mt-auto bg-slate-900 p-5 rounded-2xl text-white shadow-2xl space-y-4">
+            <div class="mission-card mt-auto bg-slate-900 p-5 rounded-2xl text-white shadow-2xl space-y-4">
                 <div class="flex justify-between items-center">
                     <span class="text-[10px] font-bold uppercase opacity-40">Mission Stats</span>
                     <span id="merge-alert" class="hidden text-[9px] bg-emerald-500 text-white px-2 py-0.5 rounded-full">點位已合併</span>
@@ -133,7 +199,7 @@
         <section class="flex-1 relative bg-slate-200">
             <div id="map"></div>
             <!-- Legend Overlay -->
-            <div class="absolute bottom-10 right-10 z-[1000] bg-white/95 backdrop-blur px-4 py-3 rounded-2xl shadow-2xl border border-slate-200 flex flex-col gap-3 text-[11px] font-bold text-slate-700">
+            <div class="legend-overlay absolute bottom-10 right-10 z-[1000] bg-white/95 backdrop-blur px-4 py-3 rounded-2xl shadow-2xl border border-slate-200 flex flex-col gap-3 text-[11px] font-bold text-slate-700">
                 <div class="flex items-center gap-3">
                     <span class="marker-candidate"></span> 待選灰點 (請依序點擊)
                 </div>
@@ -368,15 +434,72 @@
             return { dLat, dLon };
         }
 
-        // 5. 分享網址邏輯：把目前已排序路徑寫進網址，朋友打開同一個網址即可看到同一條路線
-        function encodeRouteData(data) {
-            const json = JSON.stringify(data);
-            const bytes = new TextEncoder().encode(json);
-            let binary = '';
-            bytes.forEach(b => binary += String.fromCharCode(b));
-            return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+        // 5. 分享網址邏輯
+        // v2 使用「整數化座標 + 差分 + 36進位」縮短網址；舊版 #route= 仍可讀取
+        function encodeSignedBase36(n) {
+            const z = n < 0 ? (-n * 2 - 1) : (n * 2);
+            return z.toString(36);
         }
 
+        function decodeSignedBase36(str) {
+            const z = parseInt(str, 36);
+            if (Number.isNaN(z)) return NaN;
+            return (z % 2 === 0) ? (z / 2) : -((z + 1) / 2);
+        }
+
+        function encodeCompactRoute(data) {
+            const scale = 100000; // 約 1.1 公尺精度，足夠路線分享且網址短很多
+            const modeCode = data.mode === 's_scan' ? 's' : 'l';
+            const nums = [];
+            let prevLat = 0, prevLon = 0;
+
+            data.points.forEach((p, idx) => {
+                const lat = Math.round(Number(p.lat) * scale);
+                const lon = Math.round(Number(p.lon) * scale);
+                if (idx === 0) {
+                    nums.push(encodeSignedBase36(lat), encodeSignedBase36(lon));
+                } else {
+                    nums.push(encodeSignedBase36(lat - prevLat), encodeSignedBase36(lon - prevLon));
+                }
+                prevLat = lat;
+                prevLon = lon;
+            });
+
+            return `2~${modeCode}~${nums.join('~')}`;
+        }
+
+        function decodeCompactRoute(str) {
+            try {
+                const parts = str.split('~');
+                if (parts[0] !== '2' || parts.length < 4) return null;
+                const mode = parts[1] === 's' ? 's_scan' : 'line';
+                const nums = parts.slice(2).map(decodeSignedBase36);
+                if (nums.some(Number.isNaN) || nums.length % 2 !== 0) return null;
+
+                const scale = 100000;
+                const points = [];
+                let lat = 0, lon = 0;
+                for (let i = 0; i < nums.length; i += 2) {
+                    if (i === 0) {
+                        lat = nums[i];
+                        lon = nums[i + 1];
+                    } else {
+                        lat += nums[i];
+                        lon += nums[i + 1];
+                    }
+                    points.push({
+                        lat: Number((lat / scale).toFixed(5)),
+                        lon: Number((lon / scale).toFixed(5))
+                    });
+                }
+                return { v: 2, mode, filename: 'shared_route', points };
+            } catch (e) {
+                console.warn('短分享網址解析失敗：', e);
+                return null;
+            }
+        }
+
+        // 舊版分享網址解碼：保留相容性，之前傳出去的 #route= 連結仍可打開
         function decodeRouteData(str) {
             try {
                 str = str.replace(/-/g, '+').replace(/_/g, '/');
@@ -385,7 +508,7 @@
                 const bytes = Uint8Array.from(binary, c => c.charCodeAt(0));
                 return JSON.parse(new TextDecoder().decode(bytes));
             } catch (e) {
-                console.warn('分享網址資料解析失敗：', e);
+                console.warn('舊版分享網址資料解析失敗：', e);
                 return null;
             }
         }
@@ -404,17 +527,12 @@
         function buildShareLink() {
             if (pickedSequence.length === 0) return null;
             const data = {
-                v: 1,
                 mode: document.getElementById('path-mode').value,
-                filename: document.getElementById('filename').value || 'mission_optimized',
-                points: pickedSequence.map(p => ({
-                    lat: Number(p.lat.toFixed(7)),
-                    lon: Number(p.lon.toFixed(7))
-                }))
+                points: pickedSequence.map(p => ({ lat: p.lat, lon: p.lon }))
             };
-            const encoded = encodeRouteData(data);
+            const encoded = encodeCompactRoute(data);
             const base = window.location.href.split('#')[0].split('?')[0];
-            return `${base}#route=${encoded}`;
+            return `${base}#r=${encoded}`;
         }
 
         async function copyShareLink() {
@@ -425,7 +543,7 @@
             }
             try {
                 await copyTextSmart(link);
-                alert('分享網址已複製！朋友打開後會看到同一條已排序路線。');
+                alert('短版分享網址已複製！朋友打開後會看到同一條已排序路線。');
             } catch (e) {
                 prompt('請手動複製這個分享網址：', link);
             }
@@ -433,11 +551,18 @@
 
         function loadRouteFromURL() {
             const hash = window.location.hash || '';
-            const match = hash.match(/route=([^&]+)/);
-            if (!match) return;
+            let data = null;
 
-            const data = decodeRouteData(match[1]);
-            if (!data || !Array.isArray(data.points) || data.points.length === 0) {
+            const compactMatch = hash.match(/(?:#|&)r=([^&]+)/);
+            if (compactMatch) data = decodeCompactRoute(compactMatch[1]);
+
+            if (!data) {
+                const legacyMatch = hash.match(/route=([^&]+)/);
+                if (legacyMatch) data = decodeRouteData(legacyMatch[1]);
+            }
+
+            if (!data) return;
+            if (!Array.isArray(data.points) || data.points.length === 0) {
                 alert('這個分享網址沒有有效的路線資料。');
                 return;
             }
